@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import requests
 
 # Page Config
-st.set_page_config(page_title="Kishore Crypto & Fib Dashboard", page_layout="wide")
+st.set_page_config(page_title="Kishore Crypto & Fib Dashboard", layout="wide")
 
 st.title("🚀 Smart Crypto & Fibonacci Confluence Dashboard")
 st.markdown("---")
