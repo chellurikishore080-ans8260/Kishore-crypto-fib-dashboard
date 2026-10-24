@@ -2,7 +2,7 @@
 Kishore Crypto Fib Dashboard - scan engine
 ==========================================
 
-* Universe : every Binance Spot ``*USDT`` pair (stablecoins and dead pairs removed)
+* Universe : every TRADING Binance Spot ``*USDT`` pair (stablecoins removed) - same list as the Trendline scanner
 * Timeframes: 1m ... 1w (see TIMEFRAMES)
 * Data     : Binance public market-data REST (no API key). Works through a list of
              fallback hosts, because api.binance.com is geo-blocked on some clouds.
@@ -40,7 +40,7 @@ HTF_MAP = {
     "2h": "1d", "4h": "1d", "6h": "1d", "8h": "1d", "12h": "3d", "1d": "1w", "3d": "1w",
 }
 
-MIN_24H_VOLUME_USDT = 500_000      # skip dead pairs (24h quote volume below this)
+MIN_24H_VOLUME_USDT = 0            # 0 = scan every TRADING USDT pair (same as the Trendline scanner)
 KLINE_LIMIT = 500                  # candles per request (EMA200 needs warm-up)
 ZIGZAG_MIN_ATR = 2.5               # price must reverse this many ATRs to confirm a swing
 MIN_CANDLES = 60                   # need at least this many closed candles
@@ -64,10 +64,9 @@ DEFAULT_BASES = [
     "https://api3.binance.com",
     "https://api4.binance.com",
     "https://api-gcp.binance.com",
-    "https://api.binance.us",       # last resort: fewer pairs, lower rate limit
 ]
 DEFAULT_BUDGET = 4800              # request weight per minute (Binance limit is 6000)
-BASE_BUDGET = {"https://api.binance.us": 900}
+BASE_BUDGET: dict[str, int] = {}
 
 STABLE_BASES = {
     "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD", "AEUR", "EUR", "GBP", "TRY",

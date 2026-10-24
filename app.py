@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from fib_engine import (
-    FIB_LEVELS, GOLD_HI, GOLD_LO, MIN_24H_VOLUME_USDT, TF_SECONDS, TIMEFRAMES,
+    FIB_LEVELS, GOLD_HI, GOLD_LO, TF_SECONDS, TIMEFRAMES,
     Scanner, analyze, build_signals, candles_df, evaluate, fib_price, fmt_price, trade_plan,
 )
 
@@ -56,6 +56,7 @@ with st.expander("⚙️ Filters", expanded=False):
     c2.selectbox("Bias", ["All", "BUY", "SELL"], key="f_bias")
     c3.checkbox("Best signal per coin only", value=False, key="f_best")
     st.multiselect("Timeframes", TIMEFRAMES, default=TIMEFRAMES, key="f_tfs")
+    st.slider("Min 24h volume (million USDT, 0 = all coins)", 0.0, 100.0, 0.0, 0.5, key="f_min_vol")
 
 
 # --------------------------------------------------------------------------- #
@@ -92,10 +93,13 @@ def signals_panel():
     bias_f = st.session_state.get("f_bias", "All")
     best_only = st.session_state.get("f_best", False)
     tf_f = st.session_state.get("f_tfs", TIMEFRAMES)
+    min_vol = st.session_state.get("f_min_vol", 0.0) * 1e6
+    vols = snap["volumes"]
 
     rows = build_signals(snap["results"], snap["prices"], set(snap["universe"]))
     rows = [r for r in rows
-            if r["score"] >= min_score and r["tf"] in tf_f and (bias_f == "All" or r["bias"] == bias_f)]
+            if r["score"] >= min_score and r["tf"] in tf_f and (bias_f == "All" or r["bias"] == bias_f)
+            and vols.get(r["symbol"], 0.0) >= min_vol]
     if best_only:
         seen, uniq = set(), []
         for r in rows:  # rows are already sorted by score
@@ -122,6 +126,7 @@ def signals_panel():
         "Grade": "A" if r["score"] >= 75 else ("B" if r["score"] >= 60 else "C"),
         "Fib %": round(r["retr"] * 100, 1),
         "Zone": r["zone"],
+        "Vol $M": round(vols.get(r["symbol"], 0.0) / 1e6, 2),
         "Price": fmt_price(r["price"]),
         "SL": fmt_price(r["sl"]),
         "TP1": fmt_price(r["tp1"]),
@@ -256,4 +261,4 @@ def chart_panel():
 
 chart_panel()
 
-st.caption(f"Pairs with 24h volume below ${MIN_24H_VOLUME_USDT:,.0f} are skipped. Times shown in IST.")
+st.caption("Scans every TRADING Binance Spot USDT pair (same coin list and data hosts as the Trendline scanner). Times shown in IST.")
