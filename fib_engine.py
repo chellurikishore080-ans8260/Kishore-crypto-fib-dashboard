@@ -440,6 +440,8 @@ class Scanner:
         self.prices: dict[str, float] = {}
         self.universe_ts = 0.0
         self.price_ts = 0.0
+        self.skipped = 0
+        self.status_filter = False
         self.stats = {"ok": 0, "err": 0, "last_error": "", "last_error_ts": 0.0, "started": time.time()}
         self.pool = ThreadPoolExecutor(max_workers=WORKERS)
         self._thread: threading.Thread | None = None
@@ -460,6 +462,8 @@ class Scanner:
                 "volumes": dict(self.volumes),
                 "stats": dict(self.stats),
                 "expected": len(self.universe) * len(TIMEFRAMES),
+                "skipped": self.skipped,
+                "status_filter": self.status_filter,
                 "active_base": self.client.active,
                 "client_error": self.client.last_error,
             }
@@ -475,13 +479,27 @@ class Scanner:
         data = self.client.get("/api/v3/ticker/24hr", weight=80, timeout=40)
         if not isinstance(data, list):
             raise RuntimeError(f"unexpected 24hr ticker response: {str(data)[:120]}")
-        syms, vols, px = [], {}, {}
+        # only pairs whose exchange status is TRADING (halted / delisting pairs still
+        # show up in the 24h ticker for a day, so the ticker alone is not enough)
+        tradable = None
+        try:
+            ex = self.client.get("/api/v3/exchangeInfo", {"permissions": "SPOT"}, weight=20, timeout=60)
+            tradable = {x["symbol"] for x in ex.get("symbols", [])
+                        if x.get("status") == "TRADING" and x.get("isSpotTradingAllowed", True)}
+            if not tradable:
+                tradable = None
+        except Exception as e:
+            self._note_error(f"exchangeInfo: {type(e).__name__}: {e}")
+        syms, vols, px, skipped = [], {}, {}, 0
         for d in data:
             s = d.get("symbol", "")
             if not s.endswith("USDT") or s[:-4] in STABLE_BASES:
                 continue
             qv = float(d.get("quoteVolume") or 0)
             if qv < MIN_24H_VOLUME_USDT or int(d.get("count") or 0) == 0:
+                continue
+            if tradable is not None and s not in tradable:
+                skipped += 1
                 continue
             syms.append(s)
             vols[s] = qv
@@ -490,6 +508,8 @@ class Scanner:
         with self.lock:
             self.universe = syms
             self.volumes = vols
+            self.skipped = skipped
+            self.status_filter = tradable is not None
             self.prices.update(px)
             keep = set(syms)
             for key in [k for k in self.results if k[0] not in keep]:

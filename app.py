@@ -83,7 +83,8 @@ def signals_panel():
 
     host = (snap["active_base"] or "?").replace("https://", "")
     st.caption(f"✅ Data: {host} · {n_pairs} USDT pairs × {len(TIMEFRAMES)} timeframes · "
-               f"scanned {done}/{exp} · auto-refresh every 10 s")
+               f"scanned {done}/{exp} · auto-refresh every 10 s"
+               + (f" · {snap['skipped']} non-trading pairs skipped" if snap.get("status_filter") else ""))
     if exp and done < 0.97 * exp:
         st.progress(min(done / exp, 1.0), text=f"First full scan in progress... {done}/{exp}")
 
