@@ -1,5 +1,5 @@
-streamlit
+streamlit>=1.50
 pandas
 numpy
 plotly
-yfinance
+requests
