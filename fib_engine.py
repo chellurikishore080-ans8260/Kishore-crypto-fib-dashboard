@@ -335,15 +335,27 @@ def evaluate(info: dict, price: float | None) -> dict | None:
     atr = info["atr"]
     tol = 0.5 * atr if np.isfinite(atr) and atr > 0 else 0.002 * price
     score, tags = zs, out["tags"]
-    if np.isfinite(info["ema99"]) and abs(price - info["ema99"]) <= tol:
-        score += 10
-        tags.append("EMA99")
-    if np.isfinite(info["ema200"]) and abs(price - info["ema200"]) <= tol:
-        score += 10
-        tags.append("EMA200")
-    if np.isfinite(info["avwap"]) and abs(price - info["avwap"]) <= tol:
-        score += 8
-        tags.append("AVWAP")
+    buy = info["bias"] == "BUY"
+
+    def level_score(level: float, support_pts: int, wrong_side_pts: int, name: str) -> int:
+        """A BUY needs the level UNDER price (support); a SELL needs it OVER price (resistance).
+        Level on the correct side and within tolerance -> bonus. Level on the wrong side
+        (price already under EMA for a BUY / over EMA for a SELL) -> counter-trend, penalty."""
+        if not np.isfinite(level):
+            return 0
+        on_support_side = level <= price if buy else level >= price
+        if on_support_side:
+            if abs(price - level) <= tol:
+                tags.append(name)
+                return support_pts
+            return 0
+        if wrong_side_pts:
+            tags.append(f"{'Under' if buy else 'Over'} {name} ✗")
+        return -wrong_side_pts
+
+    score += level_score(info["ema99"], 10, 10, "EMA99")
+    score += level_score(info["ema200"], 10, 10, "EMA200")
+    score += level_score(info["avwap"], 8, 0, "AVWAP")
     if info["rej"] == 2:
         score += 15
         tags.append("Sweep+Reclaim")

@@ -144,7 +144,7 @@ def signals_panel():
         },
     )
     st.caption(
-        "Score = Fib zone (Golden Pocket 40 / OTE 28 / 0.382 15) + EMA99 + EMA200 (+10 each) + anchored VWAP (+8) "
+        "Score = Fib zone (Golden Pocket 40 / OTE 28 / 0.382 15) + EMA99 + EMA200 as support/resistance (+10 each, only on the correct side of price; −10 each if price is already under them for a BUY / over them for a SELL) + anchored VWAP (+8) "
         "+ Rejection (+10) or Sweep+Reclaim (+15) + volume spike (+6) + higher-TF direction (+10 / −10) "
         "+ multi-TF fib cluster (+6 per TF, max 18). SL = beyond 0.886, TP1 = swing extreme, TP2 = 1.272 extension."
     )
