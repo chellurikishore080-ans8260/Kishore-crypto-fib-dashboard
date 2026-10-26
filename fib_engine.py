@@ -7,7 +7,7 @@ Kishore Crypto Fib Dashboard - scan engine
 * Data     : Binance public market-data REST (no API key). Works through a list of
              fallback hosts, because api.binance.com is geo-blocked on some clouds.
 * Logic    : ATR zig-zag swing leg -> Fibonacci retracement -> confluence score
-             (fib zone + HTF leg direction + EMA99/EMA200 + anchored VWAP +
+             (fib zone + Supertrend (same + higher TF) + EMA99/EMA200 + anchored VWAP +
               rejection / sweep-reclaim candle + volume + multi-TF fib cluster)
 
 Nothing here imports Streamlit, so it can be tested on its own.
@@ -45,6 +45,9 @@ KLINE_LIMIT = 500                  # candles per request (EMA200 needs warm-up)
 ZIGZAG_MIN_ATR = 2.5               # price must reverse this many ATRs to confirm a swing
 MIN_CANDLES = 60                   # need at least this many closed candles
 
+ST_PERIOD, ST_MULT = 10, 3.0       # Supertrend(10,3) - same settings as the wick-touch scanner
+ST_PTS = 10                        # points for / against a Supertrend direction
+TREND_CAP = 25                     # EMA-wrong-side + Supertrend + HTF Supertrend adjustments are capped to +/- this
 GOLD_LO, GOLD_HI = 0.618, 0.65     # golden pocket
 OTE_LO, OTE_HI = 0.5, 0.786        # optimal trade entry band
 FIB_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.65, 0.705, 0.786, 0.886, 1.0]
@@ -173,6 +176,38 @@ def _atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, n: int = 14) -> np.ndarray
     prev_c = np.concatenate([[c[0]], c[:-1]])
     tr = np.maximum(h - l, np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
     return pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy()
+
+
+def supertrend(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int = ST_PERIOD, mult: float = ST_MULT):
+    """Classic Supertrend (Wilder ATR on hl2). Returns (line, direction); direction +1 = bullish, -1 = bearish."""
+    n = len(c)
+    atr = _atr(h, l, c, period)
+    hl2 = (h + l) / 2.0
+    up, dn = hl2 + mult * atr, hl2 - mult * atr
+    fu, fl = up.copy(), dn.copy()
+    direction = np.ones(n, dtype=int)
+    for i in range(1, n):
+        fu[i] = up[i] if (up[i] < fu[i - 1] or c[i - 1] > fu[i - 1]) else fu[i - 1]
+        fl[i] = dn[i] if (dn[i] > fl[i - 1] or c[i - 1] < fl[i - 1]) else fl[i - 1]
+        if direction[i - 1] == -1:
+            direction[i] = 1 if c[i] > fu[i] else -1
+        else:
+            direction[i] = -1 if c[i] < fl[i] else 1
+    line = np.where(direction == 1, fl, fu)
+    return line, direction
+
+
+def trend_state(klines, now_ms: int | None = None) -> dict | None:
+    """Supertrend direction on the last CLOSED candle (does not repaint intrabar)."""
+    if not klines:
+        return None
+    now_ms = now_ms or int(time.time() * 1000)
+    a = np.array([[k[2], k[3], k[4], k[6]] for k in klines], dtype=float)
+    a = a[a[:, 3] < now_ms]
+    if len(a) < 30:
+        return None
+    line, d = supertrend(a[:, 0], a[:, 1], a[:, 2])
+    return {"dir": int(d[-1]), "line": float(line[-1])}
 
 
 def zigzag(h: np.ndarray, l: np.ndarray, atr: np.ndarray, min_atr: float = ZIGZAG_MIN_ATR):
@@ -328,7 +363,7 @@ def evaluate(info: dict, price: float | None) -> dict | None:
     else:
         zone, zs = None, 0
 
-    out = {"retr": retr, "zone": zone, "in_ote": in_gold or in_ote, "score": zs, "tags": []}
+    out = {"retr": retr, "zone": zone, "in_ote": in_gold or in_ote, "score": zs, "tags": [], "ema_pen": 0}
     if zone is None:
         return out
 
@@ -336,6 +371,7 @@ def evaluate(info: dict, price: float | None) -> dict | None:
     tol = 0.5 * atr if np.isfinite(atr) and atr > 0 else 0.002 * price
     score, tags = zs, out["tags"]
     buy = info["bias"] == "BUY"
+    pen = [0]
 
     def level_score(level: float, support_pts: int, wrong_side_pts: int, name: str) -> int:
         """A BUY needs the level UNDER price (support); a SELL needs it OVER price (resistance).
@@ -351,7 +387,8 @@ def evaluate(info: dict, price: float | None) -> dict | None:
             return 0
         if wrong_side_pts:
             tags.append(f"{'Under' if buy else 'Over'} {name} ✗")
-        return -wrong_side_pts
+            pen[0] -= wrong_side_pts
+        return 0
 
     score += level_score(info["ema99"], 10, 10, "EMA99")
     score += level_score(info["ema200"], 10, 10, "EMA200")
@@ -366,6 +403,7 @@ def evaluate(info: dict, price: float | None) -> dict | None:
         score += 6
         tags.append(f"Vol x{info['vol_ratio']:.1f}")
     out["score"] = score
+    out["ema_pen"] = pen[0]
     return out
 
 
@@ -386,8 +424,13 @@ def trade_plan(info: dict, price: float) -> dict | None:
     }
 
 
-def build_signals(results: dict, prices: dict, universe: set | None = None) -> list[dict]:
-    """Turn stored per-(symbol, tf) legs into scored signals using the live prices."""
+def build_signals(results: dict, prices: dict, universe: set | None = None,
+                  trend: dict | None = None) -> list[dict]:
+    """Turn stored per-(symbol, tf) legs into scored signals using the live prices.
+
+    ``trend`` maps (symbol, tf) -> {'dir': +1/-1, 'line': x} (Supertrend state).
+    """
+    trend = trend or {}
     by_symbol: dict[str, dict[str, dict]] = defaultdict(dict)
     for (sym, tf), info in results.items():
         if info and (universe is None or sym in universe):
@@ -407,14 +450,22 @@ def build_signals(results: dict, prices: dict, universe: set | None = None) -> l
             info = tfs[tf]
             score, tags = ev["score"], list(ev["tags"])
 
+            # trend adjustment = EMA-wrong-side penalty + same-TF Supertrend + HTF Supertrend,
+            # capped so one trend condition cannot be counted three times
+            want = 1 if info["bias"] == "BUY" else -1
+            adj = ev.get("ema_pen", 0)
+            st_same = trend.get((sym, tf))
+            if st_same:
+                ok = st_same["dir"] == want
+                adj += ST_PTS if ok else -ST_PTS
+                tags.append("Supertrend ✓" if ok else "Supertrend ✗")
             htf = HTF_MAP.get(tf)
-            if htf and htf in tfs:
-                if tfs[htf]["bias"] == info["bias"]:
-                    score += 10
-                    tags.append(f"HTF {htf} ✓")
-                else:
-                    score -= 10
-                    tags.append(f"HTF {htf} ✗")
+            st_htf = trend.get((sym, htf)) if htf else None
+            if st_htf:
+                ok = st_htf["dir"] == want
+                adj += ST_PTS if ok else -ST_PTS
+                tags.append(f"HTF {htf} Supertrend {'✓' if ok else '✗'}")
+            score += max(-TREND_CAP, min(TREND_CAP, adj))
 
             cluster = [t for t, (e, _) in evals.items()
                        if t != tf and e and e["in_ote"] and tfs[t]["bias"] == info["bias"]]
@@ -445,6 +496,7 @@ class Scanner:
         self.client = client or BinanceClient()
         self.lock = threading.RLock()
         self.results: dict[tuple[str, str], dict | None] = {}
+        self.trend: dict[tuple[str, str], dict] = {}
         self.next_due: dict[tuple[str, str], float] = {}
         self.universe: list[str] = []
         self.volumes: dict[str, float] = {}
@@ -468,6 +520,7 @@ class Scanner:
         with self.lock:
             return {
                 "results": dict(self.results),
+                "trend": dict(self.trend),
                 "prices": dict(self.prices),
                 "universe": list(self.universe),
                 "volumes": dict(self.volumes),
@@ -525,6 +578,7 @@ class Scanner:
             keep = set(syms)
             for key in [k for k in self.results if k[0] not in keep]:
                 self.results.pop(key, None)
+                self.trend.pop(key, None)
                 self.next_due.pop(key, None)
             self.universe_ts = time.time()
             self.price_ts = time.time()
@@ -552,6 +606,7 @@ class Scanner:
         try:
             kl = self.client.klines(sym, tf, KLINE_LIMIT)
             info = analyze(sym, tf, kl)
+            tr = trend_state(kl)
             if kl:
                 nd = (kl[-1][6] + 1) / 1000.0 + 2.0 + random.random() * 3.0
             else:
@@ -559,6 +614,8 @@ class Scanner:
             nd = max(nd, time.time() + 5)
             with self.lock:
                 self.results[key] = info
+                if tr:
+                    self.trend[key] = tr
                 self.next_due[key] = nd
                 self.stats["ok"] += 1
             return True

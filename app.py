@@ -9,13 +9,14 @@ results and a chart. No scan buttons, no sidebar controls: open the page and it 
 import os
 import time
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from fib_engine import (
     FIB_LEVELS, GOLD_HI, GOLD_LO, TF_SECONDS, TIMEFRAMES,
-    Scanner, analyze, build_signals, candles_df, evaluate, fib_price, fmt_price, trade_plan,
+    Scanner, analyze, build_signals, candles_df, evaluate, fib_price, fmt_price, supertrend, trade_plan,
 )
 
 st.set_page_config(page_title="Kishore Crypto Fib Dashboard", page_icon="🚀", layout="wide")
@@ -96,7 +97,7 @@ def signals_panel():
     min_vol = st.session_state.get("f_min_vol", 0.0) * 1e6
     vols = snap["volumes"]
 
-    rows = build_signals(snap["results"], snap["prices"], set(snap["universe"]))
+    rows = build_signals(snap["results"], snap["prices"], set(snap["universe"]), snap.get("trend"))
     rows = [r for r in rows
             if r["score"] >= min_score and r["tf"] in tf_f and (bias_f == "All" or r["bias"] == bias_f)
             and vols.get(r["symbol"], 0.0) >= min_vol]
@@ -144,9 +145,12 @@ def signals_panel():
         },
     )
     st.caption(
-        "Score = Fib zone (Golden Pocket 40 / OTE 28 / 0.382 15) + EMA99 + EMA200 as support/resistance (+10 each, only on the correct side of price; −10 each if price is already under them for a BUY / over them for a SELL) + anchored VWAP (+8) "
-        "+ Rejection (+10) or Sweep+Reclaim (+15) + volume spike (+6) + higher-TF direction (+10 / −10) "
-        "+ multi-TF fib cluster (+6 per TF, max 18). SL = beyond 0.886, TP1 = swing extreme, TP2 = 1.272 extension."
+        "Score = Fib zone (Golden Pocket 40 / OTE 28 / 0.382 15) + EMA99 + EMA200 as support/resistance "
+        "(+10 each, only on the correct side of price) + anchored VWAP (+8) + Rejection (+10) or Sweep+Reclaim (+15) "
+        "+ volume spike (+6) + multi-TF fib cluster (+6 per TF, max 18). "
+        "Trend adjustment, capped at ±25 in total: Supertrend(10,3) on the same TF (±10) + on the higher TF (±10) "
+        "− 10 for each of EMA99/EMA200 that price is already beyond (under for BUY / over for SELL). "
+        "SL = beyond 0.886, TP1 = swing extreme, TP2 = 1.272 extension."
     )
 
 
@@ -164,11 +168,19 @@ def make_chart(symbol: str, tf: str, kl) -> tuple[go.Figure, dict | None, pd.Dat
     info = analyze(symbol, tf, kl)
     df["ema99"] = df["close"].ewm(span=99, adjust=False).mean()
     df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+    st_line, st_dir = supertrend(df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy())
+    df["st_line"], df["st_dir"] = st_line, st_dir
+    df["st_bull"] = np.where(st_dir == 1, st_line, np.nan)
+    df["st_bear"] = np.where(st_dir == -1, st_line, np.nan)
     view = df.tail(200)
 
     fig = go.Figure(go.Candlestick(
         x=view["time"], open=view["open"], high=view["high"], low=view["low"], close=view["close"], name="Price",
     ))
+    fig.add_trace(go.Scatter(x=view["time"], y=view["st_bull"], mode="lines", name="Supertrend ▲",
+                             line=dict(color="#26a69a", width=1.2), connectgaps=False))
+    fig.add_trace(go.Scatter(x=view["time"], y=view["st_bear"], mode="lines", name="Supertrend ▼",
+                             line=dict(color="#ef5350", width=1.2), connectgaps=False))
     if len(df) >= 99:
         fig.add_trace(go.Scatter(x=view["time"], y=view["ema99"], mode="lines", name="EMA99",
                                  line=dict(color="#f0b90b", width=1.3)))
@@ -231,6 +243,8 @@ def chart_panel():
 
     fig, info, df = make_chart(symbol, tf, kl)
     st.plotly_chart(fig, width="stretch")
+    st.caption(f"Supertrend(10,3): {'🟢 Bullish' if df['st_dir'].iloc[-1] == 1 else '🔴 Bearish'} · "
+               f"line {fmt_price(float(df['st_line'].iloc[-1]))}")
 
     price = snap["prices"].get(symbol) or float(df["close"].iloc[-1])
     if not info:
