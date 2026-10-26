@@ -14,10 +14,19 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from fib_engine import (
-    FIB_LEVELS, GOLD_HI, GOLD_LO, TF_SECONDS, TIMEFRAMES,
-    Scanner, analyze, build_signals, candles_df, evaluate, fib_price, fmt_price, supertrend, trade_plan,
-)
+try:
+    from fib_engine import (
+        FIB_LEVELS, GOLD_HI, GOLD_LO, TF_SECONDS, TIMEFRAMES,
+        Scanner, analyze, build_signals, candles_df, evaluate, fib_price, fmt_price, supertrend, trade_plan,
+    )
+except ImportError as _import_err:
+    # Happens right after a code update when Streamlit reloaded app.py but still holds the
+    # old fib_engine module in memory. One reboot fixes it; show the real reason instead of a redacted error.
+    st.error(
+        f"App code was updated while it was running: `{_import_err}`\n\n"
+        "Open **Manage app → Reboot app** once and it will load the new version."
+    )
+    st.stop()
 
 st.set_page_config(page_title="Kishore Crypto Fib Dashboard", page_icon="🚀", layout="wide")
 
